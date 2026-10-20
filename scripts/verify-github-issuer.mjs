@@ -20,6 +20,7 @@ const tail = await api(path, 'POST', {});
 const socket = new WebSocket(tail.url, 'trace-v1');
 const marker = `moemail-issuer-probe-${Date.now()}`;
 let timer;
+let received = 0;
 try {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Log connection timed out')), 15000);
@@ -27,12 +28,15 @@ try {
     socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('Log connection failed')); }, { once: true });
   });
   const captured = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Probe log was not received')), 20000);
+    timer = setTimeout(() => reject(new Error(`Probe log was not received (${received} tail events)`)), 20000);
     socket.addEventListener('message', async event => {
       try {
         const message = typeof event.data === 'string' ? event.data : await event.data.text();
         const record = JSON.parse(message);
-        if (!record.event?.request?.url?.includes(marker)) return;
+        received++;
+        const requestUrl = record.event?.request?.url;
+        if (received <= 3) console.log(`Tail event keys: ${Object.keys(record).join(',')}; path: ${requestUrl ? new URL(requestUrl).pathname : 'none'}`);
+        if (!requestUrl?.includes('/api/auth/callback/github')) return;
         clearTimeout(timer);
         resolve(record);
       } catch (error) { clearTimeout(timer); reject(error); }
@@ -42,6 +46,7 @@ try {
   url.searchParams.set('code', marker);
   url.searchParams.set('iss', 'https://github.com/login/oauth');
   const response = await fetch(url, { redirect: 'manual' });
+  console.log(`Probe response: HTTP ${response.status}; location: ${response.headers.get('location')}; ray: ${response.headers.get('cf-ray')}`);
   const record = await captured;
   const messages = (record.logs || []).flatMap(log => log.message || []).map(value => typeof value === 'string' ? value : JSON.stringify(value)).join('\n');
   console.log(`Production deployment: ${deployment}; probe HTTP status: ${response.status}`);
