@@ -70,6 +70,8 @@ try {
   url.searchParams.set('iss', 'https://github.com/login/oauth');
   const state = authorization.searchParams.get('state');
   if (state) url.searchParams.set('state', state);
+  // The trace-v1 socket opens before the subscription reaches all edge locations.
+  await new Promise(resolve => setTimeout(resolve, 3000));
   const response = await fetch(url, { redirect: 'manual', headers: { Cookie: cookieHeader() } });
   console.log(`Probe response: HTTP ${response.status}; location: ${response.headers.get('location')}; ray: ${response.headers.get('cf-ray')}`);
   const record = await captured;
