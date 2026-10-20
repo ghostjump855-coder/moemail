@@ -1,0 +1,78 @@
+name: Deploy Pages only
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish the website after checking the existing Pages bindings
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moemail-pages-only
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AUTH_GITHUB_ID: ${{ secrets.AUTH_GITHUB_ID }}
+      AUTH_GITHUB_SECRET: ${{ secrets.AUTH_GITHUB_SECRET }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Read and preserve the existing Pages project
+        id: project
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync, appendFileSync } from 'node:fs';
+          const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+          if (account !== '905e6fac8d707fa8ba3e6641bea72cb6') throw new Error('Unexpected Cloudflare account');
+          const url = `https://api.cloudflare.com/client/v4/accounts/${account}/pages/projects/moemail`;
+          const response = await fetch(url, { headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } });
+          const payload = await response.json();
+          if (!response.ok || !payload.success) throw new Error(`Cannot read existing Pages project (${response.status})`);
+          const project = payload.result;
+          if (project.name !== 'moemail' || project.subdomain !== 'moemail-2ba.pages.dev') throw new Error('Unexpected Pages project');
+          const config = project.deployment_configs.production;
+          const database = config.d1_databases?.DB?.id;
+          const namespace = config.kv_namespaces?.SITE_CONFIG?.namespace_id;
+          if (!database || !namespace || !project.production_branch) throw new Error('Existing production bindings are missing');
+          if (!process.env.AUTH_GITHUB_ID || !process.env.AUTH_GITHUB_SECRET || !process.env.AUTH_SECRET) throw new Error('Existing GitHub authentication secrets are missing');
+          const wrangler = {
+            name: project.name,
+            compatibility_date: config.compatibility_date || '2024-03-20',
+            compatibility_flags: config.compatibility_flags || ['nodejs_compat'],
+            pages_build_output_dir: '.vercel/output/static',
+            d1_databases: [{ binding: 'DB', database_id: database }],
+            kv_namespaces: [{ binding: 'SITE_CONFIG', id: namespace }]
+          };
+          writeFileSync('wrangler.json', JSON.stringify(wrangler, null, 2));
+          appendFileSync(process.env.GITHUB_OUTPUT, `name=${project.name}\nbranch=${project.production_branch}\n`);
+          console.log(JSON.stringify({ project: project.name, domain: project.subdomain, branch: project.production_branch, previousDeployment: project.canonical_deployment?.id, database, namespace, compatibilityDate: wrangler.compatibility_date, compatibilityFlags: wrangler.compatibility_flags }));
+          NODE
+      - name: Install pinned dependencies
+        if: inputs.deploy
+        run: pnpm install --frozen-lockfile
+      - name: Verify types
+        if: inputs.deploy
+        run: pnpm exec tsc --noEmit
+      - name: Build website
+        if: inputs.deploy
+        run: pnpm run build:pages
+      - name: Publish website to the existing production branch
+        if: inputs.deploy
+        run: pnpm exec wrangler pages deploy .vercel/output/static --project-name '${{ steps.project.outputs.name }}' --branch '${{ steps.project.outputs.branch }}' --commit-hash "$GITHUB_SHA"
