@@ -78,3 +78,5 @@ jobs:
       - name: Publish website to the existing production branch
         if: inputs.deploy
         run: pnpm exec wrangler pages deploy .vercel/output/static --project-name '${{ steps.project.outputs.name }}' --branch '${{ steps.project.outputs.branch }}' --commit-hash "$GITHUB_SHA"
+      - name: Verify production GitHub issuer handling
+        run: node scripts/verify-github-issuer.mjs
