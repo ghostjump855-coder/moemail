@@ -13,6 +13,29 @@ async function api(path, method = 'GET', body) {
 }
 const project = await api('');
 if (project.subdomain !== 'moemail-2ba.pages.dev') throw new Error('Unexpected Pages project');
+// Start a normal sign-in to obtain the short-lived PKCE cookie, without
+// following the redirect or logging into a GitHub account.
+const cookies = new Map();
+function rememberCookies(response) {
+  for (const header of response.headers.getSetCookie()) {
+    const pair = header.split(';', 1)[0];
+    const index = pair.indexOf('=');
+    cookies.set(pair.slice(0, index), pair.slice(index + 1));
+  }
+}
+const cookieHeader = () => [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+const csrfResponse = await fetch('https://moemail-2ba.pages.dev/api/auth/csrf');
+rememberCookies(csrfResponse);
+const { csrfToken } = await csrfResponse.json();
+if (!csrfToken) throw new Error('No CSRF token was returned');
+const signInResponse = await fetch('https://moemail-2ba.pages.dev/api/auth/signin/github', {
+  method: 'POST', redirect: 'manual',
+  headers: { Cookie: cookieHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams({ csrfToken, callbackUrl: 'https://moemail-2ba.pages.dev/zh-CN/' }),
+});
+rememberCookies(signInResponse);
+const authorization = new URL(signInResponse.headers.get('location'));
+if (authorization.hostname !== 'github.com') throw new Error('GitHub sign-in did not reach authorization');
 const deployment = project.canonical_deployment?.id;
 if (!deployment) throw new Error('No production deployment');
 const path = `/deployments/${deployment}/tails`;
@@ -45,7 +68,9 @@ try {
   const url = new URL('https://moemail-2ba.pages.dev/api/auth/callback/github');
   url.searchParams.set('code', marker);
   url.searchParams.set('iss', 'https://github.com/login/oauth');
-  const response = await fetch(url, { redirect: 'manual' });
+  const state = authorization.searchParams.get('state');
+  if (state) url.searchParams.set('state', state);
+  const response = await fetch(url, { redirect: 'manual', headers: { Cookie: cookieHeader() } });
   console.log(`Probe response: HTTP ${response.status}; location: ${response.headers.get('location')}; ray: ${response.headers.get('cf-ray')}`);
   const record = await captured;
   const messages = (record.logs || []).flatMap(log => log.message || []).map(value => typeof value === 'string' ? value : JSON.stringify(value)).join('\n');
