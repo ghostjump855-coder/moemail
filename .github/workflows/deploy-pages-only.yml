@@ -27,9 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v2
+        if: inputs.deploy
         with:
           version: 9
       - uses: actions/setup-node@v4
+        if: inputs.deploy
         with:
           node-version: '22'
           cache: pnpm
